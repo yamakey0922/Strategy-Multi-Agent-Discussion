@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LLM自律議論シミュレーター (オートモード)</title>
+    <title>LLM自律議論シミュレーター (安定版 v4)</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -103,17 +103,15 @@
         .expert-panel { border-top: 2px solid #007bff; padding-top: 15px; margin-top: auto; }
         .btn-expert { background-color: #007bff; color: white; }
 
-        /* 次のスピーカー表示タグ（非表示にするがデバッグ用に残してもよい） */
-        .next-speaker-tag { display: none; }
-        
         /* インジケーター */
         .typing-indicator { font-size: 0.8em; color: #888; text-align: center; margin-top: 10px; display: none; }
+        .retry-indicator { color: #e65100; font-weight: bold; }
     </style>
 </head>
 <body>
 
     <header>
-        <h1>🤖 AI Boardroom Simulator</h1>
+        <h1>🤖 AI Boardroom Simulator (v4)</h1>
         <div class="turn-counter">Turn: <span id="turn-count">0</span> / 10</div>
     </header>
 
@@ -168,6 +166,9 @@
     <script>
         // --- 定数・状態変数 ---
         const MAX_TURNS_PER_ROUND = 10;
+        // エラー回避のため、モデルが見つからない場合は gemini-1.5-pro や gemini-1.5-flash に変更してください
+        const GEMINI_MODEL_NAME = "gemini-2.5-pro"; 
+
         let currentTurnCount = 0;
         let isAutoMode = false;
         let discussionHistory = [];
@@ -206,12 +207,11 @@
             pauseMenu: document.getElementById('pause-menu')
         };
 
-        // --- ペルソナ定義 (モデレーターにルーティング機能を付与) ---
+        // --- ペルソナ定義 ---
         const PERSONAS = {
             "ディスカッション・モデレーター": {
                 api: "gemini",
                 roleName: "ディスカッション・モデレーター",
-                // プロンプトに「次の指名」の指示を追加
                 prompt: `あなたは、議論の「プロセス」を管理する優秀なモデレーターです。
 • 役割: 議論の指揮者
 • ミッション:
@@ -275,39 +275,32 @@
 
         // --- イベントリスナー ---
 
-        // 開始ボタン
         buttons.startAuto.addEventListener('click', () => {
             if (!initializeSystem()) return;
             startAutoMode();
         });
 
-        // 継続ボタン
         buttons.continueAuto.addEventListener('click', () => {
-            currentTurnCount = 0; // カウンタのみリセット
+            currentTurnCount = 0; 
             updateTurnDisplay();
             panels.pauseMenu.style.display = 'none';
             buttons.forceStop.style.display = 'inline-block';
-            
-            // 継続時はモデレーターにバトンを戻す
             orchestrateNextTurn("ディスカッション・モデレーター");
         });
 
-        // まとめボタン
         buttons.summaryAuto.addEventListener('click', async () => {
             panels.pauseMenu.style.display = 'none';
             buttons.forceStop.style.display = 'none';
             await generateSummary();
         });
 
-        // 強制停止ボタン
         buttons.forceStop.addEventListener('click', () => {
             isAutoMode = false;
             buttons.forceStop.style.display = 'none';
-            panels.pauseMenu.style.display = 'block'; // 停止したらメニューを出す
+            panels.pauseMenu.style.display = 'block'; 
             addMessageToChat('system', '自動進行を強制停止しました。');
         });
 
-        // エキスパート（ユーザー）送信
         buttons.expert.addEventListener('click', () => {
             const content = inputs.expert.value;
             if (!content) return;
@@ -318,7 +311,6 @@
             inputs.expert.disabled = true;
             buttons.expert.disabled = true;
 
-            // ユーザー回答後、自動モードならモデレーターに戻す
             if (isAutoMode) {
                 orchestrateNextTurn("ディスカッション・モデレーター");
             }
@@ -336,7 +328,6 @@
                 return false;
             }
             
-            // プロンプトにお題を埋め込む
             Object.keys(PERSONAS).forEach(key => {
                 if (PERSONAS[key].prompt) {
                     PERSONAS[key].prompt = PERSONAS[key].prompt.replace(/\$\{discussionTopic\}/g, discussionTopic);
@@ -357,75 +348,59 @@
             buttons.forceStop.style.display = 'inline-block';
             panels.pauseMenu.style.display = 'none';
 
-            addMessageToChat('system', `議論「${discussionTopic}」を開始します。モデレーターが起動中です...`);
-
-            // 最初は必ずモデレーターから
+            addMessageToChat('system', `議論「${discussionTopic}」を開始します。`);
             orchestrateNextTurn("ディスカッション・モデレーター");
         }
 
-        // 次のターンを実行するオーケストレーター
         async function orchestrateNextTurn(roleName) {
             if (!isAutoMode) return;
 
-            // ターン制限チェック
             if (currentTurnCount >= MAX_TURNS_PER_ROUND) {
                 pauseAutoMode();
                 return;
             }
 
-            // ユーザーの番の場合
             if (roleName === "ドメイン・エキスパート") {
                 addMessageToChat('system', '>> あなたの番です。回答を入力してください。');
                 inputs.expert.disabled = false;
                 buttons.expert.disabled = false;
                 inputs.expert.focus();
-                return; // ユーザー入力待ちのためここで関数終了
+                return; 
             }
 
-            // AIの番
             try {
                 showTyping(true, roleName);
                 
-                // API呼び出し
                 const content = await callLLM(roleName);
                 
                 showTyping(false);
                 
-                // 履歴追加と表示
-                // [[NEXT:...]] タグを削除して表示をきれいにする
                 const cleanContent = content.replace(/\[\[NEXT:.*?\]\]/g, '').trim();
                 addMessageToChat(roleName, cleanContent);
-                discussionHistory.push({ role: roleName, content: content }); // 履歴にはタグ付きで残す（文脈維持のため）
+                discussionHistory.push({ role: roleName, content: content });
 
                 currentTurnCount++;
                 updateTurnDisplay();
 
-                // 次の挙動の決定
                 if (roleName === "ディスカッション・モデレーター") {
-                    // モデレーターの場合、タグを解析して次を指名
                     const nextMatch = content.match(/\[\[NEXT:\s*(.+?)\]\]/);
                     if (nextMatch && nextMatch[1]) {
                         let nextRole = nextMatch[1].trim();
-                        // 役割名が正しいか簡易チェック（不一致ならモデレーター継続）
                         if (!PERSONAS[nextRole]) {
-                            console.warn(`Unknown role requested: ${nextRole}. Fallback to Moderator.`);
                             nextRole = "ディスカッション・モデレーター";
                         }
-                        // 少し待ってから次へ
                         setTimeout(() => orchestrateNextTurn(nextRole), 1000);
                     } else {
-                        // タグがない場合、デフォルトでランダム指名か再度モデレーター
-                        console.warn("No NEXT tag found. Moderator continues.");
                         setTimeout(() => orchestrateNextTurn("ディスカッション・モデレーター"), 1000);
                     }
                 } else {
-                    // モデレーター以外が話した後は、必ずモデレーターに戻す（さばいてもらうため）
                     setTimeout(() => orchestrateNextTurn("ディスカッション・モデレーター"), 1000);
                 }
 
             } catch (e) {
                 showTyping(false);
                 addMessageToChat('system', `エラー: ${e.message}`);
+                console.error(e);
                 isAutoMode = false;
                 buttons.forceStop.style.display = 'none';
                 buttons.startAuto.style.display = 'inline-block';
@@ -433,7 +408,6 @@
         }
 
         function pauseAutoMode() {
-            // isAutoMode = false; // 再開できるようにフラグは維持してもいいが、制御を止める
             buttons.forceStop.style.display = 'none';
             panels.pauseMenu.style.display = 'block';
             addMessageToChat('system', '規定のターン数に達しました。操作を選択してください。');
@@ -443,11 +417,83 @@
 
         async function callLLM(roleName) {
             const persona = PERSONAS[roleName];
-            
             if (persona.api === 'openai') {
                 return await callOpenAI(persona);
             } else {
                 return await callGemini(persona);
+            }
+        }
+
+        async function callGemini(persona) {
+            let contents = formatHistoryForGemini(discussionHistory);
+
+            if (contents.length === 0) {
+                contents.push({
+                    role: "user",
+                    parts: [{ text: `議論開始: ${discussionTopic}\nあなたの役割として議論をリード、または発言してください。` }]
+                });
+            }
+
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL_NAME}:generateContent?key=${geminiApiKey}`;
+            
+            // セーフティ設定: 議論が中断されないように緩和設定を追加
+            const safetySettings = [
+                { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_ONLY_HIGH" },
+                { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_ONLY_HIGH" },
+                { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_ONLY_HIGH" },
+                { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_ONLY_HIGH" }
+            ];
+
+            const body = JSON.stringify({
+                contents: contents,
+                systemInstruction: { parts: [{ text: persona.prompt }] },
+                generationConfig: { temperature: 0.7 },
+                safetySettings: safetySettings
+            });
+
+            const maxRetries = 3;
+            let retryDelay = 2000;
+
+            for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+                try {
+                    const response = await fetch(url, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: body
+                    });
+
+                    if (!response.ok) {
+                        const errData = await response.json().catch(() => ({}));
+                        if (response.status === 503 || response.status === 429) {
+                            if (attempt <= maxRetries) {
+                                showTyping(true, `${persona.roleName} (混雑中... ${attempt}回目リトライ)`);
+                                await new Promise(r => setTimeout(r, retryDelay));
+                                retryDelay *= 2;
+                                continue;
+                            }
+                        }
+                        throw new Error(`Gemini Error ${response.status}: ${JSON.stringify(errData)}`);
+                    }
+
+                    const data = await response.json();
+                    
+                    // 【修正】 厳格なnullチェック
+                    // candidatesが存在し、長さが0以上で、最初の要素にcontentがあるか確認
+                    if (!data.candidates || data.candidates.length === 0 || !data.candidates[0].content) {
+                        console.error("Empty Gemini Response:", data);
+                        if (data.promptFeedback) {
+                            throw new Error(`Safety Blocked: ${JSON.stringify(data.promptFeedback)}`);
+                        }
+                        throw new Error("Empty response from Gemini (Candidates missing)");
+                    }
+                    
+                    return data.candidates[0].content.parts[0].text;
+
+                } catch (e) {
+                    if (attempt > maxRetries) throw e;
+                    // 致命的なエラー以外はリトライしたい場合ここで分岐可能だが、今回はスロー
+                    throw e;
+                }
             }
         }
 
@@ -457,7 +503,6 @@
                 ...formatHistoryForOpenAI(discussionHistory)
             ];
 
-            // 初回などで履歴がない場合のトリガー
             if (messages.length === 1) {
                 messages.push({ role: "user", content: `議論開始: ${discussionTopic}` });
             }
@@ -480,78 +525,63 @@
                 throw new Error(err.error?.message || "OpenAI Error");
             }
             const data = await response.json();
+            
+            // 【修正】厳格なnullチェック
+            if (!data.choices || data.choices.length === 0 || !data.choices[0].message) {
+                console.error("Empty OpenAI Response:", data);
+                throw new Error("Empty response from OpenAI");
+            }
+            
             return data.choices[0].message.content;
         }
 
-        async function callGemini(persona) {
-            let contents = formatHistoryForGemini(discussionHistory);
-
-            // 履歴が空の場合のトリガー
-            if (contents.length === 0) {
-                contents.push({
-                    role: "user",
-                    parts: [{ text: `議論開始: ${discussionTopic}\nあなたの役割として議論をリード、または発言してください。` }]
-                });
-            }
-
-            // Gemini 2.5 Pro (なければ 1.5-pro にフォールバック推奨)
-            const model = "gemini-2.5-flash-lite"; // 動作しない場合は gemini-1.5-pro に変更してください
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiApiKey}`;
-
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    contents: contents,
-                    systemInstruction: { parts: [{ text: persona.prompt }] },
-                    generationConfig: { temperature: 0.7 }
-                })
-            });
-
-            if (!response.ok) {
-                const err = await response.json();
-                throw new Error(JSON.stringify(err));
-            }
-            const data = await response.json();
-            
-            if (!data.candidates || !data.candidates[0].content) {
-                throw new Error("Empty response from Gemini");
-            }
-            return data.candidates[0].content.parts[0].text;
-        }
-
         async function generateSummary() {
-            showTyping(true, "ディスカッション・モデレーター");
+            showTyping(true, "ディスカッション・モデレーター (まとめ作成中)");
             try {
                 const prompt = "これまでの議論全体を整理し、決定事項、残された課題、ネクストアクションをまとめたサマリーを作成してください。";
                 
-                // 一時的にモデレーターとしてGeminiを呼ぶ
                 let history = formatHistoryForGemini(discussionHistory);
                 history.push({ role: "user", parts: [{ text: prompt }] });
 
-                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiApiKey}`;
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL_NAME}:generateContent?key=${geminiApiKey}`;
+                
+                // まとめ作成時もセーフティ設定を追加
+                const safetySettings = [
+                    { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_ONLY_HIGH" },
+                    { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_ONLY_HIGH" },
+                    { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_ONLY_HIGH" },
+                    { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_ONLY_HIGH" }
+                ];
+
                 const response = await fetch(url, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         contents: history,
-                        systemInstruction: { parts: [{ text: "あなたは優秀な書記・モデレーターです。" }] }
+                        systemInstruction: { parts: [{ text: "あなたは優秀な書記・モデレーターです。" }] },
+                        safetySettings: safetySettings
                     })
                 });
 
+                if (!response.ok) throw new Error("Summary Gen Error: " + response.status);
                 const data = await response.json();
+                
+                if (!data.candidates || data.candidates.length === 0) {
+                     throw new Error("Summary generation failed (Empty response)");
+                }
+
                 const summary = data.candidates[0].content.parts[0].text;
                 
                 showTyping(false);
                 addMessageToChat("最終まとめ", summary, "role-moderator");
                 
-                // 終了処理
                 buttons.startAuto.style.display = 'inline-block';
                 buttons.startAuto.innerText = '🔄 新しい議論を始める';
 
             } catch (e) {
                 showTyping(false);
                 addMessageToChat('system', `まとめ作成エラー: ${e.message}`);
+                console.error(e);
             }
         }
 
@@ -580,7 +610,11 @@
         function showTyping(show, roleName = '') {
             typingIndicator.style.display = show ? 'block' : 'none';
             if (show) {
-                typingIndicator.innerText = `${roleName} が入力中...`;
+                if (roleName.includes("リトライ")) {
+                    typingIndicator.innerHTML = `<span class="retry-indicator">${roleName}</span>`;
+                } else {
+                    typingIndicator.innerText = `${roleName} が入力中...`;
+                }
             }
         }
 
@@ -590,7 +624,6 @@
 
         function formatHistoryForOpenAI(history) {
             return history.map(item => {
-                // OpenAI視点では、自分(Architect/Creator)以外は全部User扱いの方が混乱が少ない
                 if (item.role === "マーケット・アーキテクト" || item.role === "ビジネス・クリエイター") {
                     return { role: "assistant", content: item.content };
                 }
@@ -601,7 +634,6 @@
         function formatHistoryForGemini(history) {
             const contents = [];
             for (const item of history) {
-                // Gemini視点
                 if (["ディスカッション・モデレーター", "テクノロジー・トランスレーター", "アセット・スカウト"].includes(item.role)) {
                     contents.push({ role: "model", parts: [{ text: item.content }] });
                 } else {
