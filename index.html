@@ -112,6 +112,7 @@
         .btn-continue { background-color: #17a2b8; color: white; }
         .btn-summary { background-color: #6c757d; color: white; }
         .btn-expert { background-color: #007bff; color: white; }
+        .btn-export { background-color: #343a40; color: white; }
 
         .typing-indicator {
             padding: 10px; font-style: italic; color: #888; font-size: 0.9em; display: none;
@@ -157,6 +158,15 @@
                 <button id="btn-force-stop" class="btn-stop" style="display:none;">⏹ 強制停止</button>
             </div>
 
+            <div class="control-section">
+                <label>サマリー出力</label>
+                <button id="btn-export-txt" class="btn-export" disabled>📄 サマリーを .txt で保存</button>
+                <button id="btn-export-doc" class="btn-export" disabled>📄 サマリーを .doc で保存</button>
+                <p style="font-size:0.8em; color:#666; margin-top:4px;">
+                    ※ .doc も中身はプレーンテキストですが、Word等でそのまま開けます。
+                </p>
+            </div>
+
             <div class="expert-panel" style="margin-top: auto;">
                 <label>あなた (ドメイン・エキスパート)</label>
                 <textarea id="expert-input" rows="4" placeholder="自動進行中でも指名されたらここに入力..." disabled></textarea>
@@ -173,7 +183,7 @@
     <script>
         // --- 定数・状態変数 ---
         const MAX_TURNS_PER_ROUND = 10;
-        const GEMINI_MODEL_NAME = "gemini-2.5-flash-lite";
+        const GEMINI_MODEL_NAME = "gemini-1.5-pro";
 
         let currentTurnCount = 0;
         let isAutoMode = false;
@@ -181,6 +191,7 @@
         let openAiApiKey = '';
         let geminiApiKey = '';
         let discussionTopic = '';
+        let lastSummaryText = ""; // サマリーの生テキスト
 
         // DOM要素
         const chatWindow = document.getElementById('chat-window');
@@ -199,7 +210,9 @@
             continueAuto: document.getElementById('btn-auto-continue'),
             summaryAuto: document.getElementById('btn-auto-summary'),
             forceStop: document.getElementById('btn-force-stop'),
-            expert: document.getElementById('btn-expert')
+            expert: document.getElementById('btn-expert'),
+            exportTxt: document.getElementById('btn-export-txt'),
+            exportDoc: document.getElementById('btn-export-doc')
         };
 
         const panels = {
@@ -207,19 +220,19 @@
         };
 
         // --- ペルソナ定義 ---
-        const PERSONAS = {
+        const PERSONAS_TEMPLATE = {
             "ディスカッション・モデレーター": {
                 api: "gemini",
                 roleName: "ディスカッション・モデレーター",
-                prompt: `あなたは、議論の「プロセス」を管理する優秀なモデレーターです。
+                basePrompt: `あなたは、議論の「プロセス」を管理する優秀なモデレーターです。
 • 役割: 議論の指揮者
 • ミッション:
-  1. 議論の目的（\${discussionTopic}）に向け、参加者から意見を引き出す。
+  1. 議論の目的（{TOPIC}）に向け、参加者から意見を引き出す。
   2. あなたが議論を回します。他の参加者が発言した後、あなたは必ずその発言を受けて整理し、**次に誰が発言すべきか**を決定します。
   3. 議論の最初は、まず「ドメイン・エキスパート（ユーザー）」に対して、テーマの背景や現状の課題を深掘りする質問を投げかけてください。
 
 • 重要: 次のスピーカーの指名方法
-  発言の最後に、必ず以下の形式で次に発言してほしい役割名を一つだけ指定してください（文脈に応じて最適な人物を選んでください）。但し、議論が煮詰まって進展が少なくなった場合のみ「ドメイン・エキスパート（ユーザー）」へ投げかけるようにしてください。
+  発言の最後に、必ず以下の形式で次に発言してほしい役割名を一つだけ指定してください（文脈に応じて最適な人物を選んでください）。
   出力形式: [[NEXT: 役割名]]
   
   ※選択可能な役割名:
@@ -235,33 +248,33 @@
             "マーケット・アーキテクト": {
                 api: "openai",
                 roleName: "マーケット・アーキテクト",
-                prompt: `あなたは「未来の顧客の代弁者」です。
+                basePrompt: `あなたは「未来の顧客の代弁者」です。
 • ミッション: 技術的制約を無視し、5-10年後の理想の未来と顧客のペインを定義する。
-• お題: \${discussionTopic}
+• お題: {TOPIC}
 • 口調: ビジョナリー、情熱的、断定的。「〜べきだ」`
             },
             "テクノロジー・トランスレーター": {
                 api: "gemini",
                 roleName: "テクノロジー・トランスレーター",
-                prompt: `あなたは「ニーズと技術の翻訳家」です。
+                basePrompt: `あなたは「ニーズと技術の翻訳家」です。
 • ミッション: 抽象的なニーズを具体的な技術パラメータや機能要件に分解する。
-• お題: \${discussionTopic}
+• お題: {TOPIC}
 • 口調: 論理的、分析的。「つまり」「要するに」`
             },
             "アセット・スカウト": {
                 api: "gemini",
                 roleName: "アセット・スカウト",
-                prompt: `あなたは「外部技術の監視者」です。
+                basePrompt: `あなたは「外部技術の監視者」です。
 • ミッション: 競合、スタートアップ、特許などの外部動向（架空可）を提示し、Buy or Buildを判断する。
-• お題: \${discussionTopic}
+• お題: {TOPIC}
 • 口調: データドリブン、辛口、早口。`
             },
             "ビジネス・クリエイター": {
                 api: "openai",
                 roleName: "ビジネス・クリエイター",
-                prompt: `あなたは「事業と出口の設計者」です。
+                basePrompt: `あなたは「事業と出口の設計者」です。
 • ミッション: 全ての要素を統合し、マネタイズモデルと出口戦略（M&Aなど）を描く。
-• お題: \${discussionTopic}
+• お題: {TOPIC}
 • 口調: 起業家的、収益志向、アグレッシブ。`
             },
             "ドメイン・エキスパート": {
@@ -269,6 +282,9 @@
                 roleName: "ドメイン・エキスパート"
             }
         };
+
+        // 実際に使う PERSONAS（initializeSystem 内でトピック埋め込み）
+        let PERSONAS = {};
 
         // --- イベントリスナー ---
 
@@ -313,6 +329,9 @@
             }
         });
 
+        buttons.exportTxt.addEventListener('click', () => downloadSummaryAs('txt'));
+        buttons.exportDoc.addEventListener('click', () => downloadSummaryAs('doc'));
+
         // --- コアロジック ---
 
         function initializeSystem() {
@@ -324,13 +343,26 @@
                 alert("APIキーを設定してください。");
                 return false;
             }
-            
-            // プロンプトにお題を埋め込み（多重置換防止のため、一旦テンプレから再構成してもよいが、ここでは簡略化）
-            Object.keys(PERSONAS).forEach(key => {
-                if (PERSONAS[key].prompt) {
-                    PERSONAS[key].prompt = PERSONAS[key].prompt.replace(/\$\{discussionTopic\}/g, discussionTopic);
+
+            // テンプレートから PERSONAS を再構成（毎回リセット）
+            PERSONAS = {};
+            Object.keys(PERSONAS_TEMPLATE).forEach(key => {
+                const template = PERSONAS_TEMPLATE[key];
+                if (!template.basePrompt) {
+                    PERSONAS[key] = { api: template.api, roleName: template.roleName };
+                } else {
+                    PERSONAS[key] = {
+                        api: template.api,
+                        roleName: template.roleName,
+                        prompt: template.basePrompt.replace(/\{TOPIC\}/g, discussionTopic)
+                    };
                 }
             });
+
+            // サマリー状態リセット
+            lastSummaryText = "";
+            buttons.exportTxt.disabled = true;
+            buttons.exportDoc.disabled = true;
 
             return true;
         }
@@ -487,11 +519,14 @@
                         continue;
                     }
                     const cand = data.candidates && data.candidates[0];
-                    if (!cand || !cand.content || !Array.isArray(cand.content.parts)) continue;
-                    const currentText = cand.content.parts.map(p => p.text || "").join("");
-                    if (!currentText) continue;
+                    const parts = cand && cand.content && Array.isArray(cand.content.parts) ? cand.content.parts : null;
+                    if (!parts || parts.length === 0) continue;
 
-                    fullText = currentText;
+                    for (const part of parts) {
+                        if (!part || typeof part.text !== 'string') continue;
+                        fullText += part.text;
+                    }
+
                     targetElement.innerHTML = fullText.replace(/\n/g, '<br>');
                     chatWindow.scrollTop = chatWindow.scrollHeight;
                 }
@@ -617,11 +652,14 @@
                             continue;
                         }
                         const cand = data.candidates && data.candidates[0];
-                        if (!cand || !cand.content || !Array.isArray(cand.content.parts)) continue;
-                        const currentText = cand.content.parts.map(p => p.text || "").join("");
-                        if (!currentText) continue;
+                        const parts = cand && cand.content && Array.isArray(cand.content.parts) ? cand.content.parts : null;
+                        if (!parts || parts.length === 0) continue;
 
-                        fullText = currentText;
+                        for (const part of parts) {
+                            if (!part || typeof part.text !== 'string') continue;
+                            fullText += part.text;
+                        }
+
                         contentSpan.innerHTML = fullText.replace(/\n/g, '<br>');
                         chatWindow.scrollTop = chatWindow.scrollHeight;
                     }
@@ -630,6 +668,11 @@
                 contentSpan.classList.remove('cursor');
                 showTyping(false);
 
+                // サマリー保存＆エクスポート有効化
+                lastSummaryText = fullText;
+                buttons.exportTxt.disabled = false;
+                buttons.exportDoc.disabled = false;
+
                 buttons.startAuto.style.display = 'inline-block';
                 buttons.startAuto.innerText = '🔄 新しい議論を始める';
 
@@ -637,6 +680,25 @@
                 showTyping(false);
                 addErrorMessage(`まとめ作成エラー: ${e.message}`);
             }
+        }
+
+        // --- サマリーのダウンロード ---
+        function downloadSummaryAs(ext) {
+            if (!lastSummaryText) {
+                alert("サマリーがまだ生成されていません。");
+                return;
+            }
+            const blob = new Blob([lastSummaryText], { type: "text/plain;charset=utf-8" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `summary.${ext}`;
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => {
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }, 0);
         }
 
         // --- ユーティリティ ---
